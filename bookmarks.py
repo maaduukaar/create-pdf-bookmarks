@@ -27,7 +27,6 @@ TOC_LINE_PATTERN = re.compile(
     r"^(\d+(?:\.\d+)*)\.?\s+(.+?)\s+(\d+)$"
 )
 
-
 def parse_toc_line(text: str):
     """
     Распарсить строку содержания.
@@ -154,44 +153,44 @@ def embed_bookmarks_to_pdf(pdf_path: str, json_path: str, show_output: bool = Tr
         True если успешно, False иначе
     """
     if not PYMUPDF_AVAILABLE:
-        print("\n❌ Библиотека PyMuPDF не установлена!")
-        print("\n💡 Установи её командой:")
+        print("\n[!] Библиотека PyMuPDF не установлена!")
+        print("\n[*] Установи её командой:")
         print("   pip install PyMuPDF")
         return False
     
     if not os.path.isfile(pdf_path):
-        print(f"\n❌ PDF файл не найден: {pdf_path}")
+        print(f"\n[!] PDF файл не найден: {pdf_path}")
         return False
     
     if not os.path.isfile(json_path):
-        print(f"\n❌ JSON файл не найден: {json_path}")
+        print(f"\n[!] JSON файл не найден: {json_path}")
         return False
     
     if show_output:
         print("\n" + "=" * 60)
         print("ВСТРАИВАНИЕ ЗАКЛАДОК В PDF")
         print("=" * 60)
-        print(f"\n📄 PDF: {os.path.basename(pdf_path)}")
-        print(f"📋 JSON: {os.path.basename(json_path)}")
+        print(f"\n[PDF] {os.path.basename(pdf_path)}")
+        print(f"[JSON] {os.path.basename(json_path)}")
     
     # Читаем закладки из JSON
     try:
         with open(json_path, 'r', encoding='utf-8') as f:
             bookmarks = json.load(f)
     except Exception as e:
-        print(f"\n❌ Ошибка чтения JSON: {e}")
+        print(f"\n[!] Ошибка чтения JSON: {e}")
         return False
     
     # Открываем PDF
     try:
         doc = fitz.open(pdf_path)
     except Exception as e:
-        print(f"\n❌ Ошибка открытия PDF: {e}")
+        print(f"\n[!] Ошибка открытия PDF: {e}")
         return False
     
     if show_output:
-        print(f"\n📖 Страниц в PDF: {len(doc)}")
-        print("\n🔧 Встраиваю закладки...")
+        print(f"\n[INFO] Страниц в PDF: {len(doc)}")
+        print("\n[*] Встраиваю закладки...")
     
     # Удаляем старые закладки
     try:
@@ -234,13 +233,13 @@ def embed_bookmarks_to_pdf(pdf_path: str, json_path: str, show_output: bool = Tr
     tree_to_toc(bookmarks, toc)
     
     if show_output:
-        print(f"✓ Подготовлено закладок: {len(toc)}")
+        print(f"[+] Подготовлено закладок: {len(toc)}")
     
     # Встраиваем закладки в PDF
     try:
         doc.set_toc(toc)
     except Exception as e:
-        print(f"\n❌ Ошибка встраивания закладок: {e}")
+        print(f"\n[!] Ошибка встраивания закладок: {e}")
         doc.close()
         return False
     
@@ -252,16 +251,16 @@ def embed_bookmarks_to_pdf(pdf_path: str, json_path: str, show_output: bool = Tr
         doc.save(output_path, garbage=4, deflate=True)
         doc.close()
     except Exception as e:
-        print(f"\n❌ Ошибка сохранения PDF: {e}")
+        print(f"\n[!] Ошибка сохранения PDF: {e}")
         doc.close()
         return False
     
     if show_output:
         print("\n" + "=" * 60)
-        print("✅ ЗАКЛАДКИ ВСТРОЕНЫ!")
+        print("[OK] ЗАКЛАДКИ ВСТРОЕНЫ!")
         print("=" * 60)
-        print(f"\n📦 Создан файл: {output_path}")
-        print(f"\n📊 Статистика:")
+        print(f"\n[>>] Создан файл: {output_path}")
+        print(f"\n[STATS] Статистика:")
         print(f"   - Встроено закладок: {len(toc)}")
         print(f"   - Исходный PDF: {os.path.basename(pdf_path)}")
         print(f"   - Новый PDF: {os.path.basename(output_path)}")
@@ -278,8 +277,8 @@ def ask_embed_bookmarks(docx_path: str, json_path: str):
         json_path: путь к созданному JSON
     """
     if not PYMUPDF_AVAILABLE:
-        print("\n⚠ PyMuPDF не установлен - встраивание закладок недоступно.")
-        print("💡 Установи: pip install PyMuPDF")
+        print("\n[!] PyMuPDF не установлен - встраивание закладок недоступно.")
+        print("[*] Установи: pip install PyMuPDF")
         return
     
     # Ищем PDF с тем же именем
@@ -290,21 +289,21 @@ def ask_embed_bookmarks(docx_path: str, json_path: str):
         print("\n" + "=" * 60)
         print("АВТОМАТИЧЕСКОЕ ВСТРАИВАНИЕ ЗАКЛАДОК")
         print("=" * 60)
-        print(f"\n✓ Найден PDF файл: {os.path.basename(pdf_path)}")
-        print("🚀 Автоматически встраиваю закладки...")
+        print(f"\n[+] Найден PDF файл: {os.path.basename(pdf_path)}")
+        print("[*] Автоматически встраиваю закладки...")
         embed_bookmarks_to_pdf(pdf_path, json_path)
     else:
         # PDF не найден - запрашиваем у пользователя
         print("\n" + "=" * 60)
         print("ВСТРАИВАНИЕ ЗАКЛАДОК В PDF")
         print("=" * 60)
-        print(f"\n⚠ PDF файл с именем '{os.path.splitext(os.path.basename(docx_path))[0]}.pdf' не найден.")
+        print(f"\n[!] PDF файл с именем '{os.path.splitext(os.path.basename(docx_path))[0]}.pdf' не найден.")
         
         while True:
-            answer = input("\n❓ Введи путь к PDF файлу (или 'n' для отказа): ").strip()
+            answer = input("\n[?] Введи путь к PDF файлу (или 'n' для отказа): ").strip()
             
             if answer.lower() in ('n', 'no', 'н', 'нет', ''):
-                print("👋 Пропускаю встраивание закладок.")
+                print("[-] Пропускаю встраивание закладок.")
                 return
             
             pdf_path = answer.strip('"\'')
@@ -312,53 +311,53 @@ def ask_embed_bookmarks(docx_path: str, json_path: str):
                 embed_bookmarks_to_pdf(pdf_path, json_path)
                 return
             else:
-                print(f"❌ Файл не найден или не является PDF: {pdf_path}")
-                print("💡 Попробуй ещё раз или введи 'n' для отказа")
+                print(f"[!] Файл не найден или не является PDF: {pdf_path}")
+                print("[*] Попробуй ещё раз или введи 'n' для отказа")
 
 
 def process_docx(docx_path: str, show_output: bool = True):
     """Основная логика обработки DOCX файла."""
     
     if not os.path.isfile(docx_path):
-        print(f"❌ Файл не найден: {docx_path}")
+        print(f"[!] Файл не найден: {docx_path}")
         return False
     
     if not docx_path.lower().endswith(".docx"):
-        print("❌ Ожидается DOCX-файл (.docx).")
+        print("[!] Ожидается DOCX-файл (.docx).")
         return False
     
     if show_output:
         print("=" * 60)
         print("ИЗВЛЕЧЕНИЕ ЗАКЛАДОК ИЗ СОДЕРЖАНИЯ DOCX")
         print("=" * 60)
-        print(f"\n📄 Файл: {os.path.basename(docx_path)}")
+        print(f"\n[FILE] {os.path.basename(docx_path)}")
     
     if show_output:
-        print("\n🔍 Читаю содержание из DOCX...")
+        print("\n[*] Читаю содержание из DOCX...")
     
     try:
         entries = extract_toc_entries(docx_path)
     except Exception as e:
-        print(f"\n❌ Ошибка при чтении файла: {e}")
+        print(f"\n[!] Ошибка при чтении файла: {e}")
         import traceback
         traceback.print_exc()
         return False
     
     if not entries:
-        print("\n⚠ Строки содержания не найдены!")
-        print("\n💡 Формат строк должен быть:")
+        print("\n[!] Строки содержания не найдены!")
+        print("\n[*] Формат строк должен быть:")
         print("   '3.4.2.1 Название раздела 69'")
         print("   где 3.4.2.1 - номер раздела, 69 - номер страницы")
         return False
     
     if show_output:
-        print(f"\n✓ Найдено заголовков: {len(entries)}\n")
+        print(f"\n[+] Найдено заголовков: {len(entries)}\n")
         
         print("Структура закладок:")
         print("-" * 60)
         for entry in entries[:15]:
             indent = "  " * (entry["level"] - 1)
-            print(f"{indent}📑 {entry['title']} → стр. {entry['page']}")
+            print(f"{indent}[>>] {entry['title']} -> стр. {entry['page']}")
         
         if len(entries) > 15:
             print(f"   ... и ещё {len(entries) - 15} заголовков")
@@ -367,7 +366,7 @@ def process_docx(docx_path: str, show_output: bool = True):
     
     # Строим дерево закладок
     if show_output:
-        print("\n🌳 Строю иерархическое дерево закладок...")
+        print("\n[*] Строю иерархическое дерево закладок...")
     
     tree = build_bookmark_tree(entries)
     
@@ -376,22 +375,22 @@ def process_docx(docx_path: str, show_output: bool = True):
     out_path = base + "_bookmarks.json"
     
     if show_output:
-        print(f"\n💾 Сохраняю JSON: {os.path.basename(out_path)}")
+        print(f"\n[*] Сохраняю JSON: {os.path.basename(out_path)}")
     
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(tree, f, ensure_ascii=False, indent=2)
     
     if show_output:
         print("\n" + "=" * 60)
-        print("✅ ГОТОВО!")
+        print("[OK] ГОТОВО!")
         print("=" * 60)
-        print(f"\n📦 Создан файл: {out_path}")
-        print("\n💡 Структура JSON:")
+        print(f"\n[>>] Создан файл: {out_path}")
+        print("\n[INFO] Структура JSON:")
         print("   - title: название закладки")
         print("   - dest: [страница, 'Fit'] - переход к странице")
         print("   - color, bold, italic: стиль закладки")
         print("   - children: вложенные закладки")
-        print("\n⚠ Примечание: координаты не установлены (используется 'Fit')")
+        print("\n[!] Примечание: координаты не установлены (используется 'Fit')")
         print("   Для точного позиционирования нужен PDF файл.")
     
     # Предлагаем встроить закладки в PDF
@@ -412,10 +411,10 @@ def get_file_interactively():
     print("  3. Интерактивный: введи путь ниже\n")
     
     while True:
-        file_path = input("📂 Введи путь к DOCX-файлу (или 'q' для выхода): ").strip()
+        file_path = input("[?] Введи путь к DOCX-файлу (или 'q' для выхода): ").strip()
         
         if file_path.lower() in ('q', 'quit', 'exit'):
-            print("👋 Выход...")
+            print("[-] Выход...")
             return None
         
         file_path = file_path.strip('"\'')
@@ -423,8 +422,8 @@ def get_file_interactively():
         if os.path.isfile(file_path):
             return file_path
         else:
-            print(f"❌ Файл не найден: {file_path}")
-            print("💡 Попробуй ещё раз или введи 'q' для выхода\n")
+            print(f"[!] Файл не найден: {file_path}")
+            print("[*] Попробуй ещё раз или введи 'q' для выхода\n")
 
 
 def main():
@@ -474,7 +473,7 @@ def main():
     success = process_docx(docx_path, show_output=not args.quiet)
     
     if not sys.stdin.isatty():
-        input("\n⏸ Нажми Enter для выхода...")
+        input("\n[PAUSE] Нажми Enter для выхода...")
     
     sys.exit(0 if success else 1)
 
