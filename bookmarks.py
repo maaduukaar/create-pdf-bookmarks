@@ -5,6 +5,10 @@
 Извлечение структуры заголовков из СОДЕРЖАНИЯ DOCX в JSON для PDF закладок.
 
 Формат JSON совместим с PyMuPDF для создания закладок в PDF.
+
+Режимы работы:
+1. Автоматический (по умолчанию) - парсинг DOCX с регуляркой
+2. Ручной (--toc-pages) - указание страниц PDF с оглавлением для извлечения
 """
 
 import sys
@@ -22,10 +26,326 @@ except ImportError:
     PYMUPDF_AVAILABLE = False
 
 
-# Регулярка для строк содержания
+# Регулярка для строк содержания (оригинальный формат)
 TOC_LINE_PATTERN = re.compile(
-    r"^(\d+(?:\.\d+)*)\.?\s+(.+?)\s+(\d+)$"
+    r"^(\d+(?:\.\d+)*)\.\s+(.+?)\s+(\d+)$"
 )
+
+# Дополнительные паттерны для разных форматов оглавления
+# Формат: "Заголовок ...... 15" или "Заголовок 15"
+TOC_LINE_PATTERN_ALT1 = re.compile(
+    r"^(.+?)\s*\.{2,}\s*(\d+)\s*$"  # С точками-лидерами
+)
+
+TOC_LINE_PATTERN_ALT2 = re.compile(
+    r"^(.+?)\s{2,}(\d+)\s*$"  # Без точек, но с пробелами
+)
+
+# Паттерн для номера раздела в начале заголовка
+SECTION_NUMBER_PATTERN = re.compile(
+    r"^(\d+(?:\.\d+)*)\.\s*(.+)$"
+)
+
+
+def parse_toc_line_from_pdf(text: str):
+    """
+    Распарсить строку содержания из PDF с более гибкой логикой.
+    
+    Поддерживаемые форматы:
+    - "1.2.3 Название раздела ...... 42"
+    - "Название раздела ...... 42"
+    - "1.2.3 Название раздела    42"
+    
+    Возвращает (заголовок, уровень, страница) или (None, None, None)
+    """
+    text = text.strip()
+    if not text or len(text) < 3:
+        return None, None, None
+    
+    title = None
+    page_number = None
+    section_number = None
+    
+    # Пробуем оригинальный паттерн
+    m = TOC_LINE_PATTERN.match(text)
+    if m:
+        section_number = m.group(1)
+        title = m.group(2).strip()
+        page_number = int(m.group(3))
+    else:
+        # Пробуем паттерн с точками-лидерами
+        m = TOC_LINE_PATTERN_ALT1.match(text)
+        if m:
+            title = m.group(1).strip()
+            page_number = int(m.group(2))
+        else:
+            # Пробуем паттерн с пробелами
+            m = TOC_LINE_PATTERN_ALT2.match(text)
+            if m:
+                title = m.group(1).strip()
+                page_number = int(m.group(2))
+    
+    if title is None or page_number is None:
+        return None, None, None
+    
+    # Убираем точки-лидеры из середины если остались
+    title = re.sub(r'\.{2,}', '', title).strip()
+    
+    # Пробуем извлечь номер раздела из заголовка
+    if section_number is None:
+        m_section = SECTION_NUMBER_PATTERN.match(title)
+        if m_section:
+            section_number = m_section.group(1)
+            title = m_section.group(2).strip()
+    
+    # Определяем уровень
+    if section_number:
+        level = section_number.count(".") + 1
+        full_title = f"{section_number} {title}"
+    else:
+        level = 1  # Без номера считаем уровнем 1
+        full_title = title
+    
+    return full_title, level, page_number
+
+
+def extract_toc_from_pdf_pages(pdf_path: str, page_numbers: list, show_output: bool = True):
+    """
+    Извлечь строки оглавления из указанных страниц PDF.
+    Определяет уровень вложенности по отступам (X-координатам).
+    
+    Args:
+        pdf_path: путь к PDF файлу
+        page_numbers: список номеров страниц (1-indexed)
+        show_output: показывать ли отладочный вывод
+    
+    Returns:
+        список записей [{title, level, page}, ...]
+    """
+    if not PYMUPDF_AVAILABLE:
+        print("[!] Библиотека PyMuPDF не установлена!")
+        print("[*] Установи: pip install PyMuPDF")
+        return []
+    
+    if not os.path.isfile(pdf_path):
+        print(f"[!] PDF файл не найден: {pdf_path}")
+        return []
+    
+    try:
+        doc = fitz.open(pdf_path)
+    except Exception as e:
+        print(f"[!] Ошибка открытия PDF: {e}")
+        return []
+    
+    total_pages = len(doc)
+    
+    if show_output:
+        print(f"\n[INFO] Всего страниц в PDF: {total_pages}")
+        print(f"[*] Читаю страницы оглавления: {page_numbers}")
+        print("[*] Определяю уровень вложенности по отступам...")
+    
+    # Собираем все строки со всех указанных страниц
+    all_lines = []
+    
+    for page_num in page_numbers:
+        if page_num < 1 or page_num > total_pages:
+            print(f"[!] Страница {page_num} вне диапазона (1-{total_pages})")
+            continue
+        
+        # PyMuPDF использует 0-индексацию
+        page = doc[page_num - 1]
+        
+        # Получаем текст с координатами блоков
+        blocks = page.get_text("dict")["blocks"]
+        
+        for block in blocks:
+            if "lines" not in block:
+                continue
+            
+            for line in block["lines"]:
+                # Собираем текст из всех spans в линии
+                line_text = ""
+                x_coord = None
+                
+                for span in line["spans"]:
+                    line_text += span["text"]
+                    # Берём X-координату первого символа
+                    if x_coord is None:
+                        x_coord = span["bbox"][0]  # bbox = [x0, y0, x1, y1]
+                
+                line_text = line_text.strip()
+                
+                if line_text and x_coord is not None:
+                    all_lines.append({
+                        "text": line_text,
+                        "x": x_coord,
+                        "page_num": page_num
+                    })
+    
+    doc.close()
+    
+    if not all_lines:
+        return []
+    
+    # Определяем уровни по отступам
+    entries = []
+    x_to_level = {}  # Маппинг X-координаты на уровень
+    current_level = 1
+    
+    # Сортируем уникальные X-координаты
+    unique_x = sorted(set(line["x"] for line in all_lines))
+    
+    # Группируем близкие X-координаты (разница < 5 пикселей)
+    x_groups = []
+    if unique_x:
+        current_group = [unique_x[0]]
+        for x in unique_x[1:]:
+            if x - current_group[-1] < 5:
+                current_group.append(x)
+            else:
+                x_groups.append(current_group)
+                current_group = [x]
+        x_groups.append(current_group)
+    
+    # Назначаем уровни группам (чем левее, тем меньше уровень)
+    for level, group in enumerate(x_groups, start=1):
+        for x in group:
+            x_to_level[x] = level
+    
+    if show_output:
+        print(f"\n[DEBUG] Найдено уровней отступов: {len(x_groups)}")
+        for level, group in enumerate(x_groups, start=1):
+            avg_x = sum(group) / len(group)
+            print(f"  Уровень {level}: X ≈ {avg_x:.1f}px")
+    
+    # Парсим каждую строку
+    if show_output:
+        print(f"\n[*] Разбор строк оглавления:")
+        print("-" * 60)
+    
+    for line_info in all_lines:
+        text = line_info["text"]
+        x = line_info["x"]
+        
+        # Парсим строку
+        full_title, auto_level, page_number = parse_toc_line_from_pdf(text)
+        
+        if full_title is not None:
+            # Если у строки есть номер раздела, используем его уровень
+            # Иначе используем уровень по отступу
+            if auto_level > 1:
+                # Есть номер раздела (1.2.3) - доверяем ему
+                final_level = auto_level
+            else:
+                # Нет номера - используем отступ
+                final_level = x_to_level.get(x, 1)
+            
+            entries.append({
+                "title": full_title,
+                "level": final_level,
+                "page": page_number
+            })
+            
+            if show_output:
+                indent = "  " * (final_level - 1)
+                print(f"{indent}[L{final_level}] {full_title} -> стр. {page_number}")
+        elif show_output and len(text) > 3:
+            # Показываем строки, которые не распознались
+            print(f"[-] Пропущено: {text[:60]}...")
+    
+    if show_output:
+        print("-" * 60)
+    
+    return entries
+
+
+def get_toc_pages_interactively(pdf_path: str):
+    """
+    Интерактивно запросить у пользователя номера страниц с оглавлением.
+    
+    Returns:
+        список номеров страниц или None при отмене
+    """
+    print("\n" + "=" * 60)
+    print("РЕЖИМ РУЧНОГО УКАЗАНИЯ СТРАНИЦ ОГЛАВЛЕНИЯ")
+    print("=" * 60)
+    
+    if not PYMUPDF_AVAILABLE:
+        print("[!] Библиотека PyMuPDF не установлена!")
+        print("[*] Установи: pip install PyMuPDF")
+        return None
+    
+    if pdf_path and os.path.isfile(pdf_path):
+        try:
+            doc = fitz.open(pdf_path)
+            total = len(doc)
+            doc.close()
+            print(f"\n[PDF] {os.path.basename(pdf_path)}")
+            print(f"[INFO] Всего страниц: {total}")
+        except:
+            pass
+    
+    print("\n[?] Введи номера страниц с оглавлением.")
+    print("    Форматы: '2' или '2,3' или '2-4' или '2,3,5-7'")
+    print("    Введи 'q' для отмены.\n")
+    
+    while True:
+        answer = input("[СТРАНИЦЫ] > ").strip()
+        
+        if answer.lower() in ('q', 'quit', 'exit', 'н', 'нет'):
+            print("[-] Отмена.")
+            return None
+        
+        if not answer:
+            print("[!] Введи хотя бы один номер страницы")
+            continue
+        
+        # Парсим номера страниц
+        try:
+            pages = parse_page_range(answer)
+            if pages:
+                print(f"[+] Выбраны страницы: {pages}")
+                return pages
+            else:
+                print("[!] Не удалось разобрать номера страниц")
+        except ValueError as e:
+            print(f"[!] Ошибка: {e}")
+
+
+def parse_page_range(page_str: str):
+    """
+    Разобрать строку с номерами страниц.
+    
+    Форматы: '2', '2,3', '2-4', '2,3,5-7'
+    
+    Returns:
+        отсортированный список уникальных номеров страниц
+    """
+    pages = set()
+    
+    parts = page_str.replace(' ', '').split(',')
+    for part in parts:
+        if '-' in part:
+            # Диапазон
+            try:
+                start, end = part.split('-', 1)
+                start = int(start)
+                end = int(end)
+                if start > end:
+                    start, end = end, start
+                for p in range(start, end + 1):
+                    pages.add(p)
+            except ValueError:
+                raise ValueError(f"Неверный диапазон: {part}")
+        else:
+            # Одиночный номер
+            try:
+                pages.add(int(part))
+            except ValueError:
+                raise ValueError(f"Неверный номер страницы: {part}")
+    
+    return sorted(pages)
+
 
 def parse_toc_line(text: str):
     """
@@ -428,19 +748,26 @@ def get_file_interactively():
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Извлечение закладок из содержания DOCX в JSON",
+        description="Извлечение закладок из содержания DOCX/PDF в JSON",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Примеры использования:
-  python %(prog)s document.docx
-  python %(prog)s "C:\\Docs\\file.docx"
-  python %(prog)s --quiet file.docx
+  python %(prog)s document.docx              # Автоматический режим (DOCX)
+  python %(prog)s document.pdf --toc-pages   # Ручной режим (интерактивный)
+  python %(prog)s document.pdf -t 2          # Указать страницу 2
+  python %(prog)s document.pdf -t 2,3,5-7    # Указать несколько страниц
+  python %(prog)s --quiet file.docx          # Тихий режим
 
-Формат содержания:
+Формат содержания (автоматический):
   1. Название раздела 5
   1.1 Подраздел 12
   3.4.2.1 Интерфейс раздела 69
-  
+
+Режим --toc-pages:
+  Используй когда регулярка не справляется с форматом оглавления.
+  Укажи страницы PDF с оглавлением, и скрипт извлечёт заголовки.
+  Поддерживает форматы: "Заголовок...... 15", "1.2 Раздел    42"
+   
 Выходной JSON содержит:
   - Заголовки с правильной нумерацией
   - Номера страниц для навигации
@@ -452,7 +779,7 @@ def main():
     parser.add_argument(
         'file',
         nargs='?',
-        help='Путь к DOCX-файлу с содержанием'
+        help='Путь к DOCX или PDF файлу'
     )
     
     parser.add_argument(
@@ -461,16 +788,32 @@ def main():
         help='Тихий режим (минимум вывода)'
     )
     
+    parser.add_argument(
+        '-t', '--toc-pages',
+        nargs='?',
+        const='interactive',
+        metavar='PAGES',
+        help='Режим указания страниц оглавления в PDF. '
+             'Без значения - интерактивный запрос. '
+             'С значением: номера страниц (2 или 2,3 или 2-4)'
+    )
+    
     args = parser.parse_args()
     
-    if args.file:
-        docx_path = args.file
+    # Определяем режим работы
+    if args.toc_pages is not None:
+        # Режим работы с PDF и ручным указанием страниц
+        success = run_toc_pages_mode(args)
     else:
-        docx_path = get_file_interactively()
-        if docx_path is None:
-            return
-    
-    success = process_docx(docx_path, show_output=not args.quiet)
+        # Стандартный режим работы с DOCX
+        if args.file:
+            docx_path = args.file
+        else:
+            docx_path = get_file_interactively()
+            if docx_path is None:
+                return
+        
+        success = process_docx(docx_path, show_output=not args.quiet)
     
     if not sys.stdin.isatty():
         input("\n[PAUSE] Нажми Enter для выхода...")
@@ -478,5 +821,122 @@ def main():
     sys.exit(0 if success else 1)
 
 
+def run_toc_pages_mode(args):
+    """
+    Запуск в режиме ручного указания страниц оглавления.
+    
+    Args:
+        args: аргументы командной строки
+    
+    Returns:
+        True если успешно, False иначе
+    """
+    show_output = not args.quiet
+    
+    # Получаем путь к PDF
+    if args.file:
+        pdf_path = args.file.strip('"\'')
+    else:
+        pdf_path = get_pdf_interactively()
+        if pdf_path is None:
+            return False
+    
+    if not os.path.isfile(pdf_path):
+        print(f"[!] Файл не найден: {pdf_path}")
+        return False
+    
+    if not pdf_path.lower().endswith('.pdf'):
+        print("[!] В режиме --toc-pages требуется PDF файл.")
+        print("[*] Для DOCX используй стандартный режим без --toc-pages")
+        return False
+    
+    # Определяем страницы
+    if args.toc_pages == 'interactive':
+        # Интерактивный режим запроса страниц
+        page_numbers = get_toc_pages_interactively(pdf_path)
+        if page_numbers is None:
+            return False
+    else:
+        # Страницы указаны в командной строке
+        try:
+            page_numbers = parse_page_range(args.toc_pages)
+            if not page_numbers:
+                print("[!] Не удалось разобрать номера страниц")
+                return False
+        except ValueError as e:
+            print(f"[!] Ошибка разбора страниц: {e}")
+            return False
+    
+    if show_output:
+        print("\n" + "=" * 60)
+        print("ИЗВЛЕЧЕНИЕ ЗАКЛАДОК ИЗ СТРАНИЦ ОГЛАВЛЕНИЯ PDF")
+        print("=" * 60)
+        print(f"\n[PDF] {os.path.basename(pdf_path)}")
+        print(f"[PAGES] Страницы оглавления: {page_numbers}")
+    
+    # Извлекаем записи из указанных страниц
+    entries = extract_toc_from_pdf_pages(pdf_path, page_numbers, show_output)
+    
+    if not entries:
+        print("\n[!] Не удалось извлечь записи оглавления!")
+        print("[*] Попробуй указать другие страницы или проверь формат.")
+        return False
+    
+    if show_output:
+        print(f"\n[+] Найдено заголовков: {len(entries)}")
+    
+    # Строим дерево закладок
+    tree = build_bookmark_tree(entries)
+    
+    # Сохраняем JSON
+    base, ext = os.path.splitext(pdf_path)
+    out_path = base + "_bookmarks.json"
+    
+    if show_output:
+        print(f"\n[*] Сохраняю JSON: {os.path.basename(out_path)}")
+    
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(tree, f, ensure_ascii=False, indent=2)
+    
+    if show_output:
+        print("\n" + "=" * 60)
+        print("[OK] ГОТОВО!")
+        print("=" * 60)
+        print(f"\n[>>] Создан файл: {out_path}")
+    
+    # Предлагаем встроить закладки в PDF
+    if show_output:
+        embed_bookmarks_to_pdf(pdf_path, out_path, show_output=True)
+    
+    return True
+
+
+def get_pdf_interactively():
+    """Запросить путь к PDF файлу интерактивно."""
+    print("=" * 60)
+    print("РЕЖИМ ИЗВЛЕЧЕНИЯ ЗАКЛАДОК ИЗ PDF")
+    print("=" * 60)
+    print("\nВведи путь к PDF файлу с оглавлением.\n")
+    
+    while True:
+        file_path = input("[?] PDF файл (или 'q' для выхода): ").strip()
+        
+        if file_path.lower() in ('q', 'quit', 'exit'):
+            print("[-] Выход...")
+            return None
+        
+        file_path = file_path.strip('"\'')
+        
+        if os.path.isfile(file_path):
+            if file_path.lower().endswith('.pdf'):
+                return file_path
+            else:
+                print("[!] Файл должен быть в формате PDF")
+        else:
+            print(f"[!] Файл не найден: {file_path}")
+            print("[*] Попробуй ещё раз или введи 'q' для выхода\n")
+
+
 if __name__ == "__main__":
     main()
+
