@@ -403,7 +403,7 @@ def build_bookmark_tree(entries):
     Структура каждого узла:
     {
         "title": "Название",
-        "dest": [page, "Fit"],  # Навигация к странице (без координат)
+        "dest": [page, "XYZ", x, y, 0] или [page, "Fit"],
         "color": {"0": 0, "1": 0, "2": 0},
         "bold": false,
         "italic": false,
@@ -416,10 +416,21 @@ def build_bookmark_tree(entries):
     for entry in entries:
         level = max(1, min(int(entry["level"]), 9))
         
+        # Определяем destination: с координатами или без
+        if "coords" in entry and entry["coords"]:
+            # Точный переход к заголовку
+            coords = entry["coords"]
+            # Формат: [page, "XYZ", x, y, zoom]
+            # y координата в PDF начинается снизу, но фактически используется top
+            dest = [entry["page"], "XYZ", coords["x"], coords["y"], 0]
+        else:
+            # Fallback: переход к странице целиком
+            dest = [entry["page"], "Fit"]
+        
         # Создаем узел закладки
         node = {
             "title": entry["title"],
-            "dest": [entry["page"], "Fit"],  # Простая навигация к странице
+            "dest": dest,
             "color": {
                 "0": 0,
                 "1": 0,
@@ -524,30 +535,50 @@ def embed_bookmarks_to_pdf(pdf_path: str, json_path: str, show_output: bool = Tr
         Рекурсивно конвертировать дерево закладок в список для PyMuPDF.
         
         Формат TOC для PyMuPDF: [level, title, page, dest_dict]
-        где dest_dict может быть пустым словарём для простого перехода.
+        dest_dict может содержать:
+          - {"kind": 1, "to": fitz.Point(x, y)} для точного перехода
+          - или просто пустой для перехода к странице
         """
         for node in nodes:
             level = parent_level + 1
             title = node.get("title", "Untitled")
             
-            # Получаем номер страницы
+            # Получаем destination
             dest = node.get("dest", [])
+            page = 1
+            dest_dict = {}
+            
             if isinstance(dest, list) and len(dest) > 0:
                 page = dest[0]
-            else:
-                page = 1
+                
+                # Проверяем тип destination
+                if len(dest) >= 4 and dest[1] == "XYZ":
+                    # Формат: [page, "XYZ", x, y, zoom]
+                    x = dest[2] if len(dest) > 2 else 0
+                    y = dest[3] if len(dest) > 3 else 0
+                    # Для PyMuPDF используем kind=1 (goto) и точку
+                    dest_dict = {
+                        "kind": 1,  # LINK_GOTO
+                        "page": page - 1,  # 0-indexed для fitz
+                        "to": fitz.Point(x, y),
+                        "zoom": 0  # 0 = сохранить текущий зум
+                    }
             
-            # Преобразуем номер страницы (в JSON нумерация может начинаться с 1)
-            # PyMuPDF использует нумерацию страниц с 1
+            # Преобразуем номер страницы
             page = max(1, min(page, len(doc)))
             
             # Добавляем закладку в список TOC
-            toc_list.append([level, title, page])
+            # PyMuPDF: [level, title, page] или [level, title, page, dest_dict]
+            if dest_dict:
+                toc_list.append([level, title, page, dest_dict])
+            else:
+                toc_list.append([level, title, page])
             
             # Рекурсивно добавляем детей
             children = node.get("children", [])
             if children:
                 tree_to_toc(children, toc_list, level)
+
     
     toc = []
     tree_to_toc(bookmarks, toc)
@@ -821,6 +852,146 @@ def main():
     sys.exit(0 if success else 1)
 
 
+def find_exact_coordinates(pdf_path: str, entries: list, show_output: bool = True):
+    """
+    Найти точные координаты заголовков в PDF документе.
+    
+    Для каждой записи из оглавления ищет соответствующий заголовок
+    на указанной странице и получает его координаты.
+    
+    Args:
+        pdf_path: путь к PDF файлу
+        entries: список записей [{title, level, page}, ...]
+        show_output: показывать ли отладочный вывод
+    
+    Returns:
+        обновлённый список entries с добавленными координатами
+    """
+    if not PYMUPDF_AVAILABLE:
+        return entries
+    
+    if not os.path.isfile(pdf_path):
+        return entries
+    
+    try:
+        doc = fitz.open(pdf_path)
+    except Exception as e:
+        if show_output:
+            print(f"[!] Ошибка открытия PDF для поиска координат: {e}")
+        return entries
+    
+    if show_output:
+        print(f"\n[*] Поиск точных координат заголовков в PDF...")
+        print("[*] Это позволит переходить прямо к заголовкам, а не к началу страницы")
+    
+    found_count = 0
+    total = len(entries)
+    
+    for i, entry in enumerate(entries):
+        title = entry["title"]
+        page_num = entry["page"]
+        
+        # Проверяем диапазон страниц
+        if page_num < 1 or page_num > len(doc):
+            continue
+        
+        page = doc[page_num - 1]  # 0-indexed
+        
+        # Генерируем варианты поиска
+        search_variants = generate_search_variants(title)
+        
+        coords = None
+        found_text = None
+        
+        # Пробуем найти каждый вариант
+        for variant in search_variants:
+            instances = page.search_for(variant)
+            if instances:
+                # Берём первое вхождение (самое верхнее на странице)
+                rect = instances[0]
+                coords = {
+                    "x": rect.x0,
+                    "y": rect.y0,
+                    "width": rect.width,
+                    "height": rect.height
+                }
+                found_text = variant
+                break
+        
+        if coords:
+            entry["coords"] = coords
+            found_count += 1
+            if show_output and i < 5:  # Показываем первые 5 для примера
+                print(f"  [✓] '{found_text[:50]}...' -> ({coords['x']:.1f}, {coords['y']:.1f})")
+        elif show_output and i < 5:
+            print(f"  [?] '{title[:50]}...' -> координаты не найдены (fallback: страница)")
+    
+    doc.close()
+    
+    if show_output:
+        print(f"\n[+] Найдены координаты для {found_count}/{total} заголовков")
+        if found_count < total:
+            print(f"[INFO] Для {total - found_count} заголовков используется переход к странице")
+    
+    return entries
+
+
+def generate_search_variants(title: str):
+    """
+    Генерирует варианты текста для поиска заголовка в PDF.
+    
+    Пробует разные варианты:
+    - Полный заголовок
+    - Без номера раздела
+    - С точкой после номера
+    - Только первые слова
+    
+    Args:
+        title: заголовок из оглавления
+    
+    Returns:
+        список вариантов для поиска (от точного к общему)
+    """
+    variants = []
+    
+    # 1. Полный заголовок как есть
+    variants.append(title.strip())
+    
+    # 2. Попробуем убрать/добавить точку после номера раздела
+    # "1.2 Введение" -> "1.2. Введение"
+    m = re.match(r'^(\d+(?:\.\d+)*)\s+(.+)$', title)
+    if m:
+        section_num = m.group(1)
+        section_title = m.group(2)
+        
+        # С точкой
+        variants.append(f"{section_num}. {section_title}")
+        
+        # Без номера (только название)
+        variants.append(section_title)
+        
+        # Первые 3-4 слова названия (для длинных заголовков)
+        words = section_title.split()
+        if len(words) > 3:
+            variants.append(' '.join(words[:3]))
+    else:
+        # Если нет номера, пробуем первые слова
+        words = title.split()
+        if len(words) > 3:
+            variants.append(' '.join(words[:3]))
+    
+    # Убираем дубликаты, сохраняя порядок
+    seen = set()
+    unique_variants = []
+    for v in variants:
+        v_clean = v.strip()
+        if v_clean and v_clean not in seen:
+            seen.add(v_clean)
+            unique_variants.append(v_clean)
+    
+    return unique_variants
+
+
 def run_toc_pages_mode(args):
     """
     Запуск в режиме ручного указания страниц оглавления.
@@ -884,6 +1055,9 @@ def run_toc_pages_mode(args):
     
     if show_output:
         print(f"\n[+] Найдено заголовков: {len(entries)}")
+    
+    # Ищем точные координаты заголовков в PDF
+    entries = find_exact_coordinates(pdf_path, entries, show_output)
     
     # Строим дерево закладок
     tree = build_bookmark_tree(entries)
