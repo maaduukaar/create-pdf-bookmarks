@@ -1132,7 +1132,7 @@ def generate_search_variants(title: str):
     Пробует разные варианты:
     - Полный заголовок
     - Без номера раздела
-    - С точкой после номера
+    - С точкой после номера / без точки
     - Только первые слова
     
     Args:
@@ -1146,28 +1146,49 @@ def generate_search_variants(title: str):
     # 1. Полный заголовок как есть
     variants.append(title.strip())
     
-    # 2. Попробуем убрать/добавить точку после номера раздела
-    # "1.2 Введение" -> "1.2. Введение"
-    m = re.match(r'^(\d+(?:\.\d+)*)\s+(.+)$', title)
+    # 2. Попробуем разные форматы номера раздела
+    # Паттерн для "1.2. Введение" или "1.2 Введение"
+    m = re.match(r'^(\d+(?:\.\d+)*)\.\s+(.+)$', title)
     if m:
+        # Номер с точкой: "1.2. Введение"
         section_num = m.group(1)
         section_title = m.group(2)
         
-        # С точкой
-        variants.append(f"{section_num}. {section_title}")
+        # Без точки: "1.2 Введение"
+        variants.append(f"{section_num} {section_title}")
         
-        # Без номера (только название)
+        # Только название: "Введение"
         variants.append(section_title)
         
         # Первые 3-4 слова названия (для длинных заголовков)
         words = section_title.split()
         if len(words) > 3:
             variants.append(' '.join(words[:3]))
+            variants.append(' '.join(words[:4]))
     else:
-        # Если нет номера, пробуем первые слова
-        words = title.split()
-        if len(words) > 3:
-            variants.append(' '.join(words[:3]))
+        # Попробуем паттерн без точки: "1.2 Введение"
+        m = re.match(r'^(\d+(?:\.\d+)*)\s+(.+)$', title)
+        if m:
+            section_num = m.group(1)
+            section_title = m.group(2)
+            
+            # С точкой: "1.2. Введение"
+            variants.append(f"{section_num}. {section_title}")
+            
+            # Только название: "Введение"
+            variants.append(section_title)
+            
+            # Первые слова
+            words = section_title.split()
+            if len(words) > 3:
+                variants.append(' '.join(words[:3]))
+                variants.append(' '.join(words[:4]))
+        else:
+            # Если нет номера, пробуем первые слова
+            words = title.split()
+            if len(words) > 3:
+                variants.append(' '.join(words[:3]))
+                variants.append(' '.join(words[:4]))
     
     # Убираем дубликаты, сохраняя порядок
     seen = set()
