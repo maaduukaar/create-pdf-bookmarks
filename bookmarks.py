@@ -41,9 +41,20 @@ TOC_LINE_PATTERN_ALT2 = re.compile(
     r"^(.+?)\s{2,}(\d+)\s*$"  # Без точек, но с пробелами
 )
 
+# Формат с номером раздела БЕЗ точки после номера: "1.1 Название 10"
+TOC_LINE_PATTERN_WITH_NUMBER = re.compile(
+    r"^(\d+(?:\.\d+)+)\s+(.+?)\s+(\d+)$"  # Номер с точками внутри, пробел, название, пробел, страница
+)
+
+# Формат БЕЗ номера раздела (только название и страница): "Перечень терминов 3"
+TOC_LINE_PATTERN_NO_NUMBER = re.compile(
+    r"^([А-Яа-яA-Za-z].+?)\s+(\d+)$"  # Название начинается с буквы, пробел(ы), страница
+)
+
 # Паттерн для номера раздела в начале заголовка
+# Поддерживает форматы: "1. Название" и "1.1 Название" (с точкой и без)
 SECTION_NUMBER_PATTERN = re.compile(
-    r"^(\d+(?:\.\d+)*)\.\s*(.+)$"
+    r"^(\d+(?:\.\d+)*)\.?\s+(.+)$"
 )
 
 
@@ -66,24 +77,37 @@ def parse_toc_line_from_pdf(text: str):
     page_number = None
     section_number = None
     
-    # Пробуем оригинальный паттерн
+    # Пробуем оригинальный паттерн (с точкой после номера: "1. Название 10")
     m = TOC_LINE_PATTERN.match(text)
     if m:
         section_number = m.group(1)
         title = m.group(2).strip()
         page_number = int(m.group(3))
     else:
-        # Пробуем паттерн с точками-лидерами
-        m = TOC_LINE_PATTERN_ALT1.match(text)
+        # Пробуем паттерн с номером БЕЗ точки после него ("1.1 Название 10")
+        m = TOC_LINE_PATTERN_WITH_NUMBER.match(text)
         if m:
-            title = m.group(1).strip()
-            page_number = int(m.group(2))
+            section_number = m.group(1)
+            title = m.group(2).strip()
+            page_number = int(m.group(3))
         else:
-            # Пробуем паттерн с пробелами
-            m = TOC_LINE_PATTERN_ALT2.match(text)
+            # Пробуем паттерн с точками-лидерами
+            m = TOC_LINE_PATTERN_ALT1.match(text)
             if m:
                 title = m.group(1).strip()
                 page_number = int(m.group(2))
+            else:
+                # Пробуем паттерн с пробелами
+                m = TOC_LINE_PATTERN_ALT2.match(text)
+                if m:
+                    title = m.group(1).strip()
+                    page_number = int(m.group(2))
+                else:
+                    # Пробуем простой паттерн без номера раздела
+                    m = TOC_LINE_PATTERN_NO_NUMBER.match(text)
+                    if m:
+                        title = m.group(1).strip()
+                        page_number = int(m.group(2))
     
     if title is None or page_number is None:
         return None, None, None
@@ -101,7 +125,8 @@ def parse_toc_line_from_pdf(text: str):
     # Определяем уровень
     if section_number:
         level = section_number.count(".") + 1
-        full_title = f"{section_number} {title}"
+        # Сохраняем точку после номера для правильного формата
+        full_title = f"{section_number}. {title}"
     else:
         level = 1  # Без номера считаем уровнем 1
         full_title = title
@@ -109,15 +134,61 @@ def parse_toc_line_from_pdf(text: str):
     return full_title, level, page_number
 
 
-def extract_toc_from_pdf_pages(pdf_path: str, page_numbers: list, show_output: bool = True):
+def determine_level_by_numbering(entries):
+    """
+    Определить уровни заголовков на основе их нумерации.
+    
+    Логика:
+    - Заголовки без номера - 1 уровень
+    - "1." или "1" - 1 уровень
+    - "1.1" - 2 уровень
+    - "1.1.1" - 3 уровень
+    - и т.д.
+    
+    Args:
+        entries: список записей с полями title, page
+    
+    Returns:
+        список записей с добавленным полем level
+    """
+    result = []
+    
+    for entry in entries:
+        title = entry.get("title", "")
+        
+        # Пытаемся извлечь номер раздела из начала заголовка
+        # Паттерн: "1.2.3" или "1.2.3." в начале строки
+        m = re.match(r'^(\d+(?:\.\d+)*)\.*\s+(.+)$', title.strip())
+        
+        if m:
+            # Есть номер раздела
+            section_number = m.group(1)
+            # Уровень = количество точек + 1
+            # "1" -> уровень 1, "1.2" -> уровень 2, "1.2.3" -> уровень 3
+            level = section_number.count(".") + 1
+        else:
+            # Нет номера - считаем уровнем 1
+            level = 1
+        
+        result.append({
+            "title": title,
+            "level": level,
+            "page": entry.get("page")
+        })
+    
+    return result
+
+
+def extract_toc_from_pdf_pages(pdf_path: str, page_numbers: list, show_output: bool = True, use_numbering: bool = False):
     """
     Извлечь строки оглавления из указанных страниц PDF.
-    Определяет уровень вложенности по отступам (X-координатам).
+    Определяет уровень вложенности по отступам (X-координатам) или по нумерации.
     
     Args:
         pdf_path: путь к PDF файлу
         page_numbers: список номеров страниц (1-indexed)
         show_output: показывать ли отладочный вывод
+        use_numbering: использовать нумерацию для определения уровней (вместо отступов)
     
     Returns:
         список записей [{title, level, page}, ...]
@@ -142,7 +213,11 @@ def extract_toc_from_pdf_pages(pdf_path: str, page_numbers: list, show_output: b
     if show_output:
         print(f"\n[INFO] Всего страниц в PDF: {total_pages}")
         print(f"[*] Читаю страницы оглавления: {page_numbers}")
-        print("[*] Определяю уровень вложенности по отступам...")
+        
+        if use_numbering:
+            print("[*] Определяю уровень вложенности по НУМЕРАЦИИ...")
+        else:
+            print("[*] Определяю уровень вложенности по отступам...")
     
     # Собираем все строки со всех указанных страниц
     all_lines = []
@@ -187,76 +262,172 @@ def extract_toc_from_pdf_pages(pdf_path: str, page_numbers: list, show_output: b
     if not all_lines:
         return []
     
-    # Определяем уровни по отступам
-    entries = []
-    x_to_level = {}  # Маппинг X-координаты на уровень
-    current_level = 1
+    # Постобработка: объединяем строки, где номер раздела отделён от названия
+    # Паттерн для определения "только номер" (например "1." или "2.1.1" или "3.2.10")
+    only_number_pattern = re.compile(r'^(\d+(?:\.\d+)*)\.*$')
     
-    # Сортируем уникальные X-координаты
-    unique_x = sorted(set(line["x"] for line in all_lines))
-    
-    # Группируем близкие X-координаты (разница < 5 пикселей)
-    x_groups = []
-    if unique_x:
-        current_group = [unique_x[0]]
-        for x in unique_x[1:]:
-            if x - current_group[-1] < 5:
-                current_group.append(x)
-            else:
-                x_groups.append(current_group)
-                current_group = [x]
-        x_groups.append(current_group)
-    
-    # Назначаем уровни группам (чем левее, тем меньше уровень)
-    for level, group in enumerate(x_groups, start=1):
-        for x in group:
-            x_to_level[x] = level
-    
-    if show_output:
-        print(f"\n[DEBUG] Найдено уровней отступов: {len(x_groups)}")
-        for level, group in enumerate(x_groups, start=1):
-            avg_x = sum(group) / len(group)
-            print(f"  Уровень {level}: X ≈ {avg_x:.1f}px")
-    
-    # Парсим каждую строку
-    if show_output:
-        print(f"\n[*] Разбор строк оглавления:")
-        print("-" * 60)
+    merged_lines = []
+    pending_number = None
+    pending_x = None
+    pending_page = None
     
     for line_info in all_lines:
         text = line_info["text"]
-        x = line_info["x"]
         
-        # Парсим строку
-        full_title, auto_level, page_number = parse_toc_line_from_pdf(text)
-        
-        if full_title is not None:
-            # Если у строки есть номер раздела, используем его уровень
-            # Иначе используем уровень по отступу
-            if auto_level > 1:
-                # Есть номер раздела (1.2.3) - доверяем ему
-                final_level = auto_level
+        # Проверяем, является ли строка только номером раздела
+        m = only_number_pattern.match(text)
+        if m:
+            # Это только номер - запоминаем и ждём следующую строку
+            pending_number = m.group(1)
+            pending_x = line_info["x"]
+            pending_page = line_info["page_num"]
+        else:
+            # Это не номер - проверяем, есть ли ожидающий номер
+            if pending_number is not None:
+                # Объединяем номер с текущей строкой
+                combined_text = f"{pending_number}. {text}"
+                merged_lines.append({
+                    "text": combined_text,
+                    "x": pending_x,
+                    "page_num": pending_page
+                })
+                pending_number = None
+                pending_x = None
+                pending_page = None
             else:
-                # Нет номера - используем отступ
-                final_level = x_to_level.get(x, 1)
-            
-            entries.append({
-                "title": full_title,
-                "level": final_level,
-                "page": page_number
-            })
-            
-            if show_output:
-                indent = "  " * (final_level - 1)
-                print(f"{indent}[L{final_level}] {full_title} -> стр. {page_number}")
-        elif show_output and len(text) > 3:
-            # Показываем строки, которые не распознались
-            print(f"[-] Пропущено: {text[:60]}...")
+                # Нет ожидающего номера - добавляем как есть
+                merged_lines.append(line_info)
+    
+    # Если остался неиспользованный номер
+    if pending_number is not None:
+        merged_lines.append({
+            "text": pending_number,
+            "x": pending_x,
+            "page_num": pending_page
+        })
+    
+    all_lines = merged_lines
     
     if show_output:
-        print("-" * 60)
+        merged_count = len([l for l in all_lines if '. ' in l["text"][:15]])  # примерная оценка
+        print(f"\n[DEBUG] Объединено строк (номер + название): ~{len(all_lines) - len(merged_lines) + len([1 for l in merged_lines if re.match(r'^\d+\.', l['text'])])} шт.")
+    
+    # Парсим строки и определяем уровни
+    entries = []
+    
+    if use_numbering:
+        # Режим определения уровней по НУМЕРАЦИИ
+        if show_output:
+            print(f"[DEBUG] Режим: определение уровня по нумерации (1., 1.1, 1.1.1)")
+        
+        # Сначала парсим все строки
+        temp_entries = []
+        
+        if show_output:
+            print(f"\n[*] Разбор строк оглавления:")
+            print("-" * 60)
+        
+        for line_info in all_lines:
+            text = line_info["text"]
+            
+            # Отладка: показываем исходную строку
+            if show_output:
+                print(f"[RAW] '{text}'")
+            
+            # Парсим строку
+            full_title, auto_level, page_number = parse_toc_line_from_pdf(text)
+            
+            if full_title is not None:
+                temp_entries.append({
+                    "title": full_title,
+                    "page": page_number
+                })
+                if show_output:
+                    print(f"  -> [OK] '{full_title}' (L{auto_level}, стр. {page_number})")
+            elif show_output and len(text) > 2:
+                print(f"  -> [SKIP]")
+
+        
+        # Применяем определение уровня по нумерации
+        entries = determine_level_by_numbering(temp_entries)
+        
+        # Показываем результат
+        if show_output:
+            for entry in entries:
+                indent = "  " * (entry["level"] - 1)
+                print(f"{indent}[L{entry['level']}] {entry['title']} -> стр. {entry['page']}")
+            print("-" * 60)
+    
+    else:
+        # Режим определения уровней по ОТСТУПАМ (оригинальная логика)
+        x_to_level = {}  # Маппинг X-координаты на уровень
+        
+        # Сортируем уникальные X-координаты
+        unique_x = sorted(set(line["x"] for line in all_lines))
+        
+        # Группируем близкие X-координаты (разница < 5 пикселей)
+        x_groups = []
+        if unique_x:
+            current_group = [unique_x[0]]
+            for x in unique_x[1:]:
+                if x - current_group[-1] < 5:
+                    current_group.append(x)
+                else:
+                    x_groups.append(current_group)
+                    current_group = [x]
+            x_groups.append(current_group)
+        
+        # Назначаем уровни группам (чем левее, тем меньше уровень)
+        for level, group in enumerate(x_groups, start=1):
+            for x in group:
+                x_to_level[x] = level
+        
+        if show_output:
+            print(f"\n[DEBUG] Найдено уровней отступов: {len(x_groups)}")
+            for level, group in enumerate(x_groups, start=1):
+                avg_x = sum(group) / len(group)
+                print(f"  Уровень {level}: X ≈ {avg_x:.1f}px")
+        
+        # Парсим каждую строку
+        if show_output:
+            print(f"\n[*] Разбор строк оглавления:")
+            print("-" * 60)
+        
+        for line_info in all_lines:
+            text = line_info["text"]
+            x = line_info["x"]
+            
+            # Парсим строку
+            full_title, auto_level, page_number = parse_toc_line_from_pdf(text)
+            
+            if full_title is not None:
+                # Если у строки есть номер раздела, используем его уровень
+                # Иначе используем уровень по отступу
+                if auto_level > 1:
+                    # Есть номер раздела (1.2.3) - доверяем ему
+                    final_level = auto_level
+                else:
+                    # Нет номера - используем отступ
+                    final_level = x_to_level.get(x, 1)
+                
+                entries.append({
+                    "title": full_title,
+                    "level": final_level,
+                    "page": page_number
+                })
+                
+                if show_output:
+                    indent = "  " * (final_level - 1)
+                    print(f"{indent}[L{final_level}] {full_title} -> стр. {page_number}")
+            elif show_output and len(text) > 3:
+                # Показываем строки, которые не распознались
+                print(f"[-] Пропущено: {text[:60]}...")
+        
+        if show_output:
+            print("-" * 60)
     
     return entries
+
 
 
 def get_toc_pages_interactively(pdf_path: str):
@@ -787,6 +958,7 @@ def main():
   python %(prog)s document.pdf --toc-pages   # Ручной режим (интерактивный)
   python %(prog)s document.pdf -t 2          # Указать страницу 2
   python %(prog)s document.pdf -t 2,3,5-7    # Указать несколько страниц
+  python %(prog)s document.pdf -t 2,3 --use-numbering  # Уровни по нумерации
   python %(prog)s --quiet file.docx          # Тихий режим
 
 Формат содержания (автоматический):
@@ -798,6 +970,15 @@ def main():
   Используй когда регулярка не справляется с форматом оглавления.
   Укажи страницы PDF с оглавлением, и скрипт извлечёт заголовки.
   Поддерживает форматы: "Заголовок...... 15", "1.2 Раздел    42"
+  
+Флаг --use-numbering:
+  Определяет уровни заголовков по нумерации (1., 1.1, 1.1.1) вместо отступов.
+  Полезно когда оглавление имеет одинаковые отступы для всех уровней.
+  Работает только с --toc-pages.
+  Пример: "Перечень терминов 3" -> уровень 1
+          "1. Назначение 10" -> уровень 1
+          "1.1 Наименование 10" -> уровень 2
+          "2.1.1 Требования 13" -> уровень 3
    
 Выходной JSON содержит:
   - Заголовки с правильной нумерацией
@@ -829,7 +1010,15 @@ def main():
              'С значением: номера страниц (2 или 2,3 или 2-4)'
     )
     
+    parser.add_argument(
+        '--use-numbering',
+        action='store_true',
+        help='Определять уровни заголовков по нумерации (1., 1.1, 1.1.1) '
+             'вместо отступов. Работает только с --toc-pages'
+    )
+    
     args = parser.parse_args()
+
     
     # Определяем режим работы
     if args.toc_pages is not None:
@@ -1046,7 +1235,10 @@ def run_toc_pages_mode(args):
         print(f"[PAGES] Страницы оглавления: {page_numbers}")
     
     # Извлекаем записи из указанных страниц
-    entries = extract_toc_from_pdf_pages(pdf_path, page_numbers, show_output)
+    # Используем нумерацию для определения уровней, если флаг установлен
+    use_numbering = getattr(args, 'use_numbering', False)
+    entries = extract_toc_from_pdf_pages(pdf_path, page_numbers, show_output, use_numbering=use_numbering)
+
     
     if not entries:
         print("\n[!] Не удалось извлечь записи оглавления!")
