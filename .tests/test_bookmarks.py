@@ -262,3 +262,37 @@ def test_generate_search_variants():
     assert "1.2 Введение" in variants_nodot
     assert "1.2. Введение" in variants_nodot
     assert "Введение" in variants_nodot
+
+
+def test_wrapped_lines_merging():
+    """
+    Test that wrapped headers spanning multiple lines or page boundaries
+    are successfully merged into a single entry with correct page numbers and levels.
+    """
+    pdf_path = os.path.join(PARENT_DIR, "RU.48324255.КС2024-РП-В1.3.pdf")
+    assert os.path.exists(pdf_path), f"User test PDF not found at {pdf_path}"
+    
+    # Extract TOC entries from pages 3 and 4
+    entries = bookmarks.extract_toc_from_pdf_pages(
+        pdf_path, 
+        page_numbers=[3, 4], 
+        show_output=False, 
+        use_numbering=False
+    )
+    
+    assert entries, "Failed to extract TOC entries from user PDF"
+    
+    # We expect "1.4. Перечень эксплуатационной документации, с которой необходимо ознакомиться пользователю" to be merged and parsed
+    entry_1_4 = [e for e in entries if "1.4." in e["title"]]
+    assert entry_1_4, "1.4 entry not found or not merged"
+    assert entry_1_4[0]["title"] == "1.4. Перечень эксплуатационной документации, с которой необходимо ознакомиться пользователю"
+    assert entry_1_4[0]["page"] == 10
+    assert entry_1_4[0]["level"] == 2
+    
+    # We expect "4.1.10. Просмотр и редактирование документа/электронной таблицы/презентации" to be merged across pages and parsed
+    entry_4_1_10 = [e for e in entries if "4.1.10" in e["title"]]
+    assert entry_4_1_10, "4.1.10 entry not found or not merged across pages"
+    assert entry_4_1_10[0]["title"] == "4.1.10. Просмотр и редактирование документа/электронной таблицы/презентации"
+    assert entry_4_1_10[0]["page"] == 31
+    assert entry_4_1_10[0]["level"] == 3
+

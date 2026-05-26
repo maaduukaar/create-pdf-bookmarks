@@ -243,6 +243,10 @@ def extract_toc_from_pdf_pages(pdf_path: str, page_numbers: list, show_output: b
                 x_coord = None
                 
                 for span in line["spans"]:
+                    # Игнорируем верхние колонтитулы (номера страниц и заголовки вверху страницы)
+                    y_coord = span["bbox"][1]
+                    if y_coord < 50:
+                        continue
                     line_text += span["text"]
                     # Берём X-координату первого символа
                     if x_coord is None:
@@ -308,9 +312,52 @@ def extract_toc_from_pdf_pages(pdf_path: str, page_numbers: list, show_output: b
     
     all_lines = merged_lines
     
+    # Постобработка 2: объединяем перенесенные на новую строку/страницу заголовки
+    def ends_with_page_number(t: str) -> bool:
+        t = t.strip()
+        return bool(re.search(r'(?:\s+|\.{2,})\s*\d+\s*$', t))
+        
+    def starts_with_section_number(t: str) -> bool:
+        t = t.strip()
+        return bool(re.match(r'^\d+(?:\.\d+)*\.?\s+', t))
+        
+    wrapped_merged_lines = []
+    current_entry = None
+    
+    for line_info in all_lines:
+        text = line_info["text"].strip()
+        if not text:
+            continue
+            
+        if current_entry is None:
+            current_entry = {
+                "text": text,
+                "x": line_info["x"],
+                "page_num": line_info["page_num"]
+            }
+        else:
+            prev_ends_with_page = ends_with_page_number(current_entry["text"])
+            curr_starts_with_section = starts_with_section_number(text)
+            x_aligned = line_info["x"] >= current_entry["x"] - 5
+            
+            if not prev_ends_with_page and not curr_starts_with_section and x_aligned:
+                # Это продолжение предыдущего заголовка
+                current_entry["text"] = f"{current_entry['text']} {text}"
+            else:
+                wrapped_merged_lines.append(current_entry)
+                current_entry = {
+                    "text": text,
+                    "x": line_info["x"],
+                    "page_num": line_info["page_num"]
+                }
+                
+    if current_entry is not None:
+        wrapped_merged_lines.append(current_entry)
+        
+    all_lines = wrapped_merged_lines
+    
     if show_output:
-        merged_count = len([l for l in all_lines if '. ' in l["text"][:15]])  # примерная оценка
-        print(f"\n[DEBUG] Объединено строк (номер + название): ~{len(all_lines) - len(merged_lines) + len([1 for l in merged_lines if re.match(r'^\d+\.', l['text'])])} шт.")
+        print(f"\n[DEBUG] Объединено строк (перенесенные заголовки): {len(merged_lines) - len(all_lines)} шт.")
     
     # Парсим строки и определяем уровни
     entries = []
@@ -386,7 +433,7 @@ def extract_toc_from_pdf_pages(pdf_path: str, page_numbers: list, show_output: b
             print(f"\n[DEBUG] Найдено уровней отступов: {len(x_groups)}")
             for level, group in enumerate(x_groups, start=1):
                 avg_x = sum(group) / len(group)
-                print(f"  Уровень {level}: X ≈ {avg_x:.1f}px")
+                print(f"  Уровень {level}: X ~ {avg_x:.1f}px")
         
         # Парсим каждую строку
         if show_output:
@@ -1111,7 +1158,7 @@ def find_exact_coordinates(pdf_path: str, entries: list, show_output: bool = Tru
             entry["coords"] = coords
             found_count += 1
             if show_output and i < 5:  # Показываем первые 5 для примера
-                print(f"  [✓] '{found_text[:50]}...' -> ({coords['x']:.1f}, {coords['y']:.1f})")
+                print(f"  [+] '{found_text[:50]}...' -> ({coords['x']:.1f}, {coords['y']:.1f})")
         elif show_output and i < 5:
             print(f"  [?] '{title[:50]}...' -> координаты не найдены (fallback: страница)")
     
